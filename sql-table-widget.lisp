@@ -613,7 +613,7 @@
 			 (,select-statement (make-instance 'select-statement
 							   :fields ,(make-naive-load-form fields)
 							   :from ,(make-naive-load-form from)
-							   :where ,(when (or query-args filters)
+							   :where ,(when (or query-args filters where)
 								     (if (null filters)
 									 `',where
 									 ;; else
@@ -665,9 +665,11 @@
 							  (range (length sorted-columns))
 							  sorted-columns))))))
 			(<:div :class ,(or html-class
-					    "sql-widget")
-			  (<:p (<:as-html ,select-sql))
-			  (<:p (<:as-html ,query-args-var))
+					   "sql-widget")
+			  (pjs-yaclml:html-block
+			    (<:p (<:as-html ,select-sql))
+			    (<:p (<:as-html ,query-args-var))
+			    (<:p (<:as-html ,count-sql)))
 			  ,@ (mapcar (lambda (filter)
 				       (let ((values (combo-filter-values filter))
 					     (name (combo-filter-name filter))
