@@ -1,8 +1,33 @@
 (in-package #:pjs-webapp)
 
 (defvar *hunchentoot-acceptor* nil)
-(defparameter +self-dir+ "/home/peter/Programming/lisp/pjs-webapp/")
-(defparameter +port+ 8181)
+
+;; ========================================================
+;;
+;; ========================================================
+
+(defparameter +port+
+  8181
+  "The TCP port that will be bound for connections. Making your lisp setuid in order to bind port 80 would be foolish.")
+
+;; ========================================================
+;; nginx needs config from http://nginx.org/en/docs/http/ngx_http_proxy_module.html
+;; ========================================================
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter +real-ip-header-name+
+    "X-Real-IP"
+    "The name of the header containing the real IP address of the request, when using a reverse proxy (this will require coordination with the configuration of your proxy). Set to NIL if you aren't running a reverse proxy (so Host-URLs will use the correct port)."))
+
+;; ========================================================
+;; a helper to push the check into compile-time
+;; ========================================================
+
+(defmacro %if-reverse-proxy (proxied raw)
+  (if +real-ip-header-name+
+      proxied
+      ;; else
+      raw))
 
 ;; ========================================================
 ;;
@@ -15,11 +40,9 @@
 	  (make-instance 'hunchentoot:easy-acceptor
 			 :port +port+))
     (setf (hunchentoot:acceptor-access-log-destination *hunchentoot-acceptor*)
-	  (sconc +self-dir+
-		 "access.log"))
+	  (asdf:system-relative-pathname "pjs-webapp" "access.log"))
     (setf (hunchentoot:acceptor-message-log-destination *hunchentoot-acceptor*)
-	  (sconc +self-dir+
-		 "message.log"))
+	  (asdf:system-relative-pathname "pjs-webapp" "message.log"))
     (hunchentoot:start *hunchentoot-acceptor*)))
 
 ;; ========================================================
@@ -30,17 +53,15 @@
   (web-init))
 
 ;; ========================================================
-;; nginx needs config from http://nginx.org/en/docs/http/ngx_http_proxy_module.html
+;;
 ;; ========================================================
 
 (defun remote-addr* (&optional (request hunchentoot:*request*))
-  (aif (hunchentoot:header-in "X-Real-IP" request)
-       it
-       ;; else
-       (if (string= (machine-instance)
-		    "fred")
-	   (error "no proxy header supplied")
-	   (hunchentoot:remote-addr request))))
+  (%if-reverse-proxy
+   (or (hunchentoot:header-in +real-ip-header-name+ request)
+       (error "missing real ip header"))
+   ;; else no proxy
+   (hunchentoot:remote-addr request)))
 
 ;; ========================================================
 ;;
@@ -116,18 +137,13 @@
 ;; ========================================================
 
 (defmacro host-url-with-params (page &rest args)
-  `(url-with-params ,(cond
-		       ((string= (machine-instance)
-				 "fred")
-			`(sconc "http://" 
-				(hunchentoot:host)
-				"/"
-				,page))
-		       (t
-			`(sconc "http://"
-				(hunchentoot:host)
-				,(format nil ":~d/" +port+)
-				,page)))
+  `(url-with-params (sconc "http://"
+			   (hunchentoot:host)
+			   (%if-reverse-proxy
+			    "/"
+			    ;; else
+			    ,(format nil ":~d/" +port+)) 
+			   ,page)
 		    ,@args))
 
 ;; ========================================================
