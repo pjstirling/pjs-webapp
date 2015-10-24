@@ -13,4 +13,6 @@
 	       #:closer-mop)
   :components ((:file "package")
                (:file "pjs-webapp")
+	       (:file "naive-load-form")
+	       (:file "selects")
 	       (:file "sql-table-widget")))
