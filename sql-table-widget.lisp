@@ -7,6 +7,8 @@
 (defclass sql-table-widget ()
   ((name :initarg :name
 	 :reader sql-table-widget-name)
+   (ajax-href :initarg :ajax-href
+	      :reader sql-table-widget-ajax-href)
    (offset :initarg :offset
 	   :reader sql-table-widget-offset)
    (per-page :initarg :per-page
@@ -113,7 +115,7 @@
       (t
        (error "unhandled filter ~w" filter)))))
 
-(defun parse-sql-table-widget-param (param stmt)
+(defun parse-sql-table-widget-param (param base-href stmt)
   (unless (table-param-p param)
     (error "bad argument ~w" param))
   (bind ((name (first param))
@@ -131,7 +133,7 @@
 			 (multiple-value-bind (sorted unsorted)
 			     (partition #'sql-table-widget-column-sort
 					(mapcar (lambda (col)
-					    (parse-table-widget-column col stmt))
+						  (parse-table-widget-column col stmt))
 						value))
 			   (collect :sorted-columns sorted :unsorted-columns unsorted)))
 			(:filters
@@ -144,6 +146,10 @@
     (apply #'make-instance
 	   'sql-table-widget
 	   :name name
+	   :ajax-href (sconc base-href
+			     (unless (ends-with-p base-href "/")
+			       "/")
+			     (symbol-name* name) "/ajax/")
 	   :offset (symb name "-offset")
 	   :per-page (symb name "-per-page")
 	   :sort-order (symb name "-sort-order")
@@ -219,7 +225,6 @@
     result))
 
 (defun fix-sort-order (sort-order length)
-  (declare (optimize (debug 3)))
   (let* ((*read-eval* nil)
 	 (value (ignore-errors (read-from-string sort-order)))
 	 (marked (make-array length
@@ -251,7 +256,7 @@
 	    (dotimes (i length)
 	      (unless (= (bit marked i)
 			 1)
-		(format t "marking missing ~A~%" (1+ i))
+		;(format t "marking missing ~A~%" (1+ i))
 		(setf (aref result index)
 		      (1+ i))
 		(incf index)))
@@ -282,12 +287,6 @@
 	    (range (length sorted-columns))
 	    sorted-columns)))))
 
-(defmacro with-gensyms ((&rest names) &body body)
-  `(let ,(mapcar (lambda (name)
-		   `(,name (gensym ,(sconc (symbol-name name) "-"))))
-	  names)
-     ,@body))
-
 (defun merge-where (from-stmt &rest filter-args)
   (let ((result from-stmt))
     (while filter-args
@@ -301,158 +300,245 @@
 		    `(and ,result ,expr))))))
     (parse-sql-expr result)))
 
+(defun widget-vars (db query-args-var select-sql count-sql row-count widget)
+  (bind ((:slots (per-page offset sort-order count-expression query query-args sorted-columns unsorted-columns filters)
+		 widget)
+	 (parsed-query (parse-sql-select query))
+	 (:symbols select-statement count-statement)
+	 (:slots (fields from where order-by group-by limit)
+		 parsed-query))
+    `((,per-page (or ,per-page 200))
+      (,offset (or ,offset 0))
+      ,@(mapcar (lambda (filter)
+		  (let ((filter-name (combo-filter-name filter))
+			(test-name (combo-filter-test-name filter)))
+		    `(,test-name (case ,filter-name
+				   ,@ (mapcar (lambda (i value)
+						`(,i
+						   ,(first value)))
+				       (range (length (combo-filter-values filter)))
+				       (combo-filter-values filter))
+				      (t
+				       nil)))))
+		filters)
+      (,query-args-var ,(when (or query-args filters)
+			  `(with-collector (collect)
+			     ,(when query-args
+				`(collect ,@query-args))
+			     ,@ (mapcar (lambda (filter)
+					  (let ((test-name (combo-filter-test-name filter)))
+					    `(when ,test-name
+					       (collect ,test-name))))
+					filters))))
+      (,sort-order (fix-sort-order ,sort-order ,(length sorted-columns)))
+      (,select-statement (make-instance 'select-statement
+					:fields ,(make-naive-load-form fields)
+					:from ,(make-naive-load-form from)
+					:where ,(when (or query-args filters where)
+						  (if (null filters)
+						      `',where
+						      ;; else
+						      `(merge-where ',where
+								    ,@ (apply #'append
+									      (mapcar (lambda (filter)
+											`(,(combo-filter-test-name filter)
+											  ',(combo-filter-sql filter)))
+										      filters)))))
+					:order-by ,(build-sql-table-widget-order-by widget)
+					:group-by ',group-by
+					:limit (list ,per-page ,offset)))
+      (,select-sql (to-sql ,select-statement ,query-args-var))
+      (,count-statement (make-instance 'select-statement
+				       :fields ',count-expression
+				       :from (select-statement-from ,select-statement)
+				       :where (select-statement-where ,select-statement)
+				       :group-by (select-statement-group-by ,select-statement)))
+      (,count-sql (to-sql ,count-statement ,query-args-var))
+      (,row-count (apply #'sqlite:execute-one-row-m-v
+			 ,db
+			 ,count-sql
+			 ,query-args-var)))))
+
 (defun build-sql-table-widget-renderer (widget stmt)
-  (with-gensyms (db navigator query-args-var select-statement select-sql count-query count-sql row-count)
-    (with-slots (name offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class)
-	widget
-      (let* ((parsed-query (parse-sql-select query)))
-	(with-slots (fields from where order-by group-by limit)
-	    parsed-query
-	  `(,name (,db)
-		  (let* ((,per-page (or ,per-page 200))
-			 (,offset (or ,offset 0))
-			 ,@ (mapcar (lambda (filter)
-				      (let ((filter-name (combo-filter-name filter))
-					    (test-name (combo-filter-test-name filter)))
-					`(,test-name (case ,filter-name
-						       ,@ (mapcar (lambda (i value)
-								    `(,i
-								       ,(first value)))
-							   (range (length (combo-filter-values filter)))
-							   (combo-filter-values filter))
-							  (t
-							   nil)))))
-				    filters)
-			 (,query-args-var ,(when (or query-args filters)
-					     `(with-collector (collect)
-						,(when query-args
-						   `(collect ,@query-args))
-						,@ (mapcar (lambda (filter)
-							     (let ((test-name (combo-filter-test-name filter)))
-							       `(when ,test-name
-								  (collect ,test-name))))
-							   filters))))
-			 (,sort-order (fix-sort-order ,sort-order ,(length sorted-columns)))
-			 (,select-statement (make-instance 'select-statement
-							   :fields ,(make-naive-load-form fields)
-							   :from ,(make-naive-load-form from)
-							   :where ,(when (or query-args filters where)
-								     (if (null filters)
-									 `',where
-									 ;; else
-									 `(merge-where ',where
-										       ,@ (apply #'append
-												 (mapcar (lambda (filter)
-													   `(,(combo-filter-test-name filter)
-													     ',(combo-filter-sql filter)))
-													 filters)))))
-							   :order-by ,(build-sql-table-widget-order-by widget)
-							   :group-by ',group-by
-							   :limit (list ,per-page ,offset)))
-			 (,select-sql (to-sql ,select-statement ,query-args-var))
-			 (,count-query (make-instance 'select-statement
-						      :fields ',count-expression
-						      :from (select-statement-from ,select-statement)
-						      :where (select-statement-where ,select-statement)
-						      :group-by (select-statement-group-by ,select-statement)))
-			 (,count-sql (to-sql ,count-query ,query-args-var))
-			 (,row-count (apply #'sqlite:execute-one-row-m-v
-					    ,db
-					    ,count-sql
-					   ,query-args-var)))
-		    (with-sqlite-statements (,db (,stmt ,select-sql))
-		      (labels ((,navigator ()
-				 (unless (< ,row-count ,per-page)
-				   (<:p
-				     (do ((i 0 (incf i ,per-page))
-					  (page 1 (incf page)))
-					 ((< ,row-count i))
-				       (if (= i ,offset)
-					   (<:as-html page)
-					   ;; else
-					   (self-link page ',offset i))
-				       (<:as-html " ")))))
-			       ,@(when sorted-columns
-				   `((name-for-column (index)
-						      (case (abs index)
-							,@ (mapcar (lambda (index col)
-								     `(,(1+ index)
-								       ,(sql-table-widget-column-name col)))
-							    (range (length sorted-columns))
-							    sorted-columns)))
-				     (render-column (index)
-						    (case (abs index)
-						      ,@ (mapcar (lambda (index col)
-								   `(,(1+ index)
-								     ,(sql-table-widget-column-code col)))
-							  (range (length sorted-columns))
-							  sorted-columns))))))
-			(<:div :class ,(or html-class
-					   "sql-widget")
-			  (pjs-yaclml:html-block
-			    (<:p (<:as-html ,select-sql))
-			    (<:p (<:as-html ,query-args-var))
-			    (<:p (<:as-html ,count-sql)))
-			  ,@ (mapcar (lambda (filter)
-				       (let ((values (combo-filter-values filter))
-					     (name (combo-filter-name filter))
-					     (test (combo-filter-test-name filter)))
-					 `(<:p (<:as-html ,(combo-filter-description filter))
-					    ,@ (apply #'append
-						      (mapcar (lambda (i value)
-								(let ((desc (second value)))
-								  `((<:as-html " ")
-								    (if (eql ,name ,i)
-									(<:as-html ,desc)
-									;; else
-									(self-link ,desc ',name ,i)))))
-							      (range (length values))
-							      values))
-					    (when ,test
-					      (<:as-html " ")
-					      (self-link "Disable filter" ',name nil)))))
-				     filters)
-			  (,navigator)
-			  (<:table
-			    ,(build-sql-table-widget-thead-renderer widget)
-			    (<:tbody
-			      (let ((index 0))
-				(dolist (arg ,query-args-var)
-				  (sqlite:bind-parameter ,stmt (incf index) arg)))
-			      (while (sqlite:step-statement ,stmt)
-				(<:tr
-				  ,@ (mapcar (lambda (index)
-					       `(<:td (render-column (aref ,sort-order ,index))))
-					     (range (length sorted-columns)))
-				  ,@ (mapcar (lambda (col)
-					       `(<:td ,(sql-table-widget-column-code col)))
-					     unsorted-columns)))))
-			  (,navigator)))))))))))
+  (bind ((:symbols db navigator query-args-var select-sql count-sql row-count)
+	 (:slots (name offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class)
+		 widget))
+    `(,name (,db)
+	    (let* ,(widget-vars db query-args-var select-sql count-sql row-count widget)
+	      (with-sqlite-statements (,db (,stmt ,select-sql))
+		(labels ((,navigator ()
+			   (unless (< ,row-count ,per-page)
+			     (<:p
+			       (do ((i 0 (incf i ,per-page))
+				    (page 1 (incf page)))
+				   ((< ,row-count i))
+				 (if (= i ,offset)
+				     (<:as-html page)
+				     ;; else
+				     (self-link page ',offset i))
+				 (<:as-html " ")))))
+			 ,@(when sorted-columns
+			     `((name-for-column (index)
+						(case (abs index)
+						  ,@ (mapcar (lambda (index col)
+							       `(,(1+ index)
+								 ,(sql-table-widget-column-name col)))
+						      (range (length sorted-columns))
+						      sorted-columns)))
+			       (render-column (index)
+					      (case (abs index)
+						,@ (mapcar (lambda (index col)
+							     `(,(1+ index)
+							       ,(sql-table-widget-column-code col)))
+						    (range (length sorted-columns))
+						    sorted-columns))))))
+		  (<:div :class ,(or html-class
+				     "sql-widget")
+		    (pjs-yaclml:html-block
+		      (<:p (<:as-html ,select-sql))
+		      (<:p (<:as-html ,query-args-var))
+		      (<:p (<:as-html ,count-sql)))
+		    ,@ (mapcar (lambda (filter)
+				 (let ((values (combo-filter-values filter))
+				       (name (combo-filter-name filter))
+				       (test (combo-filter-test-name filter)))
+				   `(<:p (<:as-html ,(combo-filter-description filter))
+				      ,@ (apply #'append
+						(mapcar (lambda (i value)
+							  (let ((desc (second value)))
+							    `((<:as-html " ")
+							      (if (eql ,name ,i)
+								  (<:as-html ,desc)
+								  ;; else
+								  (self-link ,desc ',name ,i)))))
+							(range (length values))
+							values))
+				      (when ,test
+					(<:as-html " ")
+					(self-link "Disable filter" ',name nil)))))
+			       filters)
+		    (,navigator)
+		    (<:table
+		      ,(build-sql-table-widget-thead-renderer widget)
+		      (<:tbody
+			(let ((index 0))
+			  (dolist (arg ,query-args-var)
+			    (sqlite:bind-parameter ,stmt (incf index) arg)))
+			(while (sqlite:step-statement ,stmt)
+			  (<:tr
+			    ,@ (mapcar (lambda (index)
+					 `(<:td (render-column (aref ,sort-order ,index))))
+				       (range (length sorted-columns)))
+			    ,@ (mapcar (lambda (col)
+					 `(<:td ,(sql-table-widget-column-code col)))
+				       unsorted-columns)))))
+		    (,navigator))))))))
 
+(defun insert-separator (sep list)
+  (let (seen)
+    (dolist-c (el list)
+      (if seen
+	  (collect sep)
+	  ;; else
+	  (setf seen t))
+      (collect el))))
 
+(defmacro dotimes-list ((i el list &key (start 0) (result nil resultp)) &body body)
+  `(let ((,i ,start))
+     (dolist (,el ,list ,@ (when resultp
+			     (list result)))
+       ,@body
+       (incf ,i))))
+
+(defun build-sql-table-widget-ajax-handler (page-name other-params authenticated-test db-context widget stmt)
+  (bind ((:db (with-db db)
+	      db-context)
+	 (name (sql-table-widget-name widget))
+	 (print-comma '(write-string ", "))
+	 (:symbols query-arg query-args-var select-sql count-sql row-count index seen)
+	 (:slots (per-page offset sort-order sorted-columns unsorted-columns ajax-href)
+		 widget))
+    `(hunchentoot:define-easy-handler (,(symb page-name "-" name "-ajax") :uri ,ajax-href)
+	 (,@(sql-table-widget-params widget)
+	  ,@other-params)
+       ;; it's more effort than I want to go to to decide if a given parameter is required for this widget
+       ;; (in general you would need to macroexpand the params and then walk the forms for function calls etc),
+       ;; so just mark them all as ignorable
+       ,@(when other-params
+	   `((declare (ignorable ,@(mapcar #'hunchentoot-param-name other-params)))))
+       (hunchentoot:start-session)
+       ,authenticated-test
+       (setf (hunchentoot:content-type*)
+	     "application/json")
+       (hunchentoot:no-cache)
+       (,with-db
+	   (let* ,(widget-vars db query-args-var select-sql count-sql row-count widget)
+	     (with-output-to-string (*standard-output*)
+	       (format t "{")
+	       (format t "\"row-count\" : ~d, " ,row-count)
+	       (format t "\"rows\" : [")
+	       (with-sqlite-statements (,db (,stmt ,select-sql))
+		 (dotimes-list (,index ,query-arg ,query-args-var :start 1)
+		   (sqlite:bind-parameter ,stmt ,index ,query-arg))
+		 ;; no optional trailing comma in json, so must conditionally insert separator
+		 (let (,seen)
+		   (while (sqlite:step-statement ,stmt)
+		     (if ,seen
+			 ,print-comma
+			 ;; else
+			 (setf ,seen t))
+		     (labels ,(when sorted-columns
+				`((render-column (index)
+						 (pjs-yaclml:with-yaclml-output-to-string
+						   (case (abs index)
+						     ,@ (mapcar (lambda (index col)
+								  `(,(1+ index)
+								    ,(sql-table-widget-column-code col)))
+							 (range (length sorted-columns))
+							 sorted-columns))))))
+		       (format t "[")
+		       ,@(insert-separator print-comma
+					   (mapcar (lambda (form)
+						     `(write-string (com.gigamonkeys.json:json ,form)))
+						   (append (mapcar (lambda (index)
+								     `(render-column (aref ,sort-order ,index)))
+								   (range (length sorted-columns)))
+							   (mapcar (lambda (col)
+								     `(pjs-yaclml:with-yaclml-output-to-string
+									,(sql-table-widget-column-code col)))
+								   unsorted-columns))))
+		       (format t "]")))
+		   (format t "]")
+		   (format t "}")))))))))
 
 (defmacro sql-easy-handler (name (&rest params) &body body)
-  (bind ((:db (name &key uri db-context authenticated-test)
-	      name
-	      (declare (ignore db-context authenticated-test)))
+  (bind ((:db (name &key uri authenticated-test db-context)
+	      name)
 	 (:mv (table-params other-params)
-	      (partition #'table-param-p params))
+		     (partition #'table-param-p params))
 	 (stmt (gensym "STMT-"))
-	 (parsed-tables (mapcar (lambda (param)
-				  (parse-sql-table-widget-param param stmt))
-				table-params)))
-    `(self-link-easy-handler (,name :uri ,uri)
-	 (,@other-params
-	  ,@(apply #'append (mapcar #'sql-table-widget-params parsed-tables)))
-       (flet ,(mapcar (lambda (widget)
-			(build-sql-table-widget-renderer widget stmt))
-	       parsed-tables)
-	 ,@body))))
+	 (parsed-widgets (mapcar (lambda (param)
+				   (parse-sql-table-widget-param param uri stmt))
+				 table-params)))
+    `(progn
+       (self-link-easy-handler (,name :uri ,uri)
+	   (,@other-params
+	    ,@(apply #'append (mapcar #'sql-table-widget-params parsed-widgets)))
+	 (flet ,(mapcar (lambda (widget)
+			  (build-sql-table-widget-renderer widget stmt))
+		 parsed-widgets)
+	   ,@body))
+       ,@(when db-context
+	   (mapcar (lambda (widget)
+		     (build-sql-table-widget-ajax-handler name other-params authenticated-test db-context widget stmt))
+		   parsed-widgets)))))
 
 (defun expand-web-params (params)
   (dolist-c (param params)
     (if (table-param-p param)
-	(dolist (param (sql-table-widget-params (parse-sql-table-widget-param param (gensym))))
+	(dolist (param (sql-table-widget-params (parse-sql-table-widget-param param "" (gensym))))
 	  (collect param))
 	;; else
 	(collect param))))
+
+

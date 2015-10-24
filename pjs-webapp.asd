@@ -1,5 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (ql:quickload "hunchentoot"))
+  (ql:quickload '("hunchentoot" "com.gigamonkeys.json" "parenscript")))
 
 (asdf:defsystem #:pjs-webapp
   :serial t
