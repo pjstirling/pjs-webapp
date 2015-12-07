@@ -15,4 +15,5 @@
                (:file "pjs-webapp")
 	       (:file "naive-load-form")
 	       (:file "selects")
+	       (:file "js")
 	       (:file "sql-table-widget")))

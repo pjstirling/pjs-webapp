@@ -171,6 +171,16 @@
 ;;
 ;; ========================================================
 
+(defun hunchentoot-param-name (param)
+  (if (listp param)
+      (first param)
+      ;; else
+      param))
+
+;; ========================================================
+;;
+;; ========================================================
+
 (defmacro self-link-easy-handler ((name
 				   &key uri
 				     (acceptor-names t)
@@ -179,12 +189,7 @@
 				  (&rest params)
 				  &body body)
   "HUNCHENTOOT:DEFINE-EASY-HANDLER augmented with lexical SELF-LINK and SELF-HREF that automate producing URLs that point at the current page, possibly with some of the parameters changed"
-  (let ((param-names (mapcar (lambda (param)
-			       (if (listp param)
-				   (first param)
-				   ;; else
-				   param))
-			     params)))
+  (let ((param-names (mapcar #'hunchentoot-param-name params)))
     `(hunchentoot:define-easy-handler (,name
 				       :uri ,uri
 				       :acceptor-names ,acceptor-names

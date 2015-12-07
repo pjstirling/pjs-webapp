@@ -7,6 +7,8 @@
 (defclass sql-table-widget ()
   ((name :initarg :name
 	 :reader sql-table-widget-name)
+   (base-href :initarg :base-href
+	      :reader sql-table-widget-base-href)
    (ajax-href :initarg :ajax-href
 	      :reader sql-table-widget-ajax-href)
    (offset :initarg :offset
@@ -95,13 +97,14 @@
       (make-instance 'sql-table-widget-column
 		     :name name
 		     :sort sort
-		     :code `(let ((text ,(format-code text-info)))
-			      (unless (null-string-p text)
-				,(if link-info
-				     `(<:a :href ,(format-code link-info)
-					(<:as-html text))
-				     ;; else
-				     `(<:as-html text))))))))
+		     :code (bind ((:symbols text))
+			     `(let ((,text ,(format-code text-info)))
+				(unless (null-string-p ,text)
+				  ,(if link-info
+				       `(<:a :href ,(format-code link-info)
+					  (<:as-html ,text))
+				       ;; else
+				       `(<:as-html ,text)))))))))
 
 (defun parse-table-widget-filter (widget-name filter)
   (destructuring-bind (name class &rest options)
@@ -146,6 +149,7 @@
     (apply #'make-instance
 	   'sql-table-widget
 	   :name name
+	   :base-href base-href
 	   :ajax-href (sconc base-href
 			     (unless (ends-with-p base-href "/")
 			       "/")
@@ -222,7 +226,7 @@
 	(setf (aref result index)
 	      i)
 	(incf index)))
-    result))
+    (princ-to-string result)))
 
 (defun fix-sort-order (sort-order length)
   (let* ((*read-eval* nil)
@@ -256,13 +260,13 @@
 	    (dotimes (i length)
 	      (unless (= (bit marked i)
 			 1)
-		;(format t "marking missing ~A~%" (1+ i))
 		(setf (aref result index)
 		      (1+ i))
 		(incf index)))
 	    result)))))
 
 (defun build-sql-table-widget-order-by (widget)
+  (declare (type sql-table-widget widget))
   (with-slots (sorted-columns sort-order)
       widget
     `(dovector-c (el ,sort-order)
@@ -300,7 +304,35 @@
 		    `(and ,result ,expr))))))
     (parse-sql-expr result)))
 
-(defun widget-vars (db query-args-var select-sql count-sql row-count widget)
+(defun column-headings-form (sorted-columns sort-order)
+  (bind ((:symbols sort-value))
+    `(flet ((name-for-column (index)
+	      (case (abs index)
+		,@(mapcar (lambda (index col)
+			    `(,(1+ index)
+			      ,(sql-table-widget-column-name col)))
+		   (range (length sorted-columns))
+		   sorted-columns))))
+       (list ,@ (mapcar (lambda (index)
+			  `(let ((,sort-value (aref ,sort-order ,index)))
+			     (list (name-for-column ,sort-value)
+				   ,(if (= index 0)
+					`(if (< ,sort-value 0)
+					     (change-sort-order (- ,sort-value) ,sort-order)
+					     ;; else
+					     nil)
+					;; else
+					`(change-sort-order (abs ,sort-value) ,sort-order))
+				   ,(if (= index 0)
+					`(if (< ,sort-value 0)
+					     nil
+					     ;; else
+					     (change-sort-order (- ,sort-value) ,sort-order))
+					;; else
+					`(change-sort-order (- (abs ,sort-value)) ,sort-order)))))
+			(range (length sorted-columns)))))))
+
+(defun widget-vars (db query-args-var select-sql count-sql column-headings row-count widget)
   (bind ((:slots (per-page offset sort-order count-expression query query-args sorted-columns unsorted-columns filters)
 		 widget)
 	 (parsed-query (parse-sql-select query))
@@ -331,6 +363,8 @@
 					       (collect ,test-name))))
 					filters))))
       (,sort-order (fix-sort-order ,sort-order ,(length sorted-columns)))
+      ,@ (when sorted-columns
+	   `((,column-headings ,(column-headings-form sorted-columns sort-order))))
       (,select-statement (make-instance 'select-statement
 					:fields ,(make-naive-load-form fields)
 					:from ,(make-naive-load-form from)
@@ -359,16 +393,33 @@
 			 ,count-sql
 			 ,query-args-var)))))
 
-(defun build-sql-table-widget-renderer (widget stmt)
-  (bind ((:symbols db navigator query-args-var select-sql count-sql row-count)
-	 (:slots (name offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class)
+;; ====================================================
+;;
+;; ====================================================
+
+(defun parenscriptify (form)
+  (typecase form
+    ((or string number)
+     form)
+    (vector
+     `(ps:array ,@ (map 'list #'parenscriptify form)))
+    (cons
+     `(ps:array ,@ (mapcar #'parenscriptify form)))))
+
+;; ====================================================
+;;
+;; ====================================================
+
+(defun build-sql-table-widget-renderer (widget stmt other-params)
+  (bind ((:symbols db navigator query-args-var select-sql count-sql row-count column-headings column-name up down)
+	 (:slots (name base-href ajax-href offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class)
 		 widget))
     `(,name (,db)
-	    (let* ,(widget-vars db query-args-var select-sql count-sql row-count widget)
+	    (let* ,(widget-vars db query-args-var select-sql count-sql column-headings row-count widget)
 	      (with-sqlite-statements (,db (,stmt ,select-sql))
 		(labels ((,navigator ()
 			   (unless (< ,row-count ,per-page)
-			     (<:p
+			     (<:p :class "nav"
 			       (do ((i 0 (incf i ,per-page))
 				    (page 1 (incf page)))
 				   ((< ,row-count i))
@@ -378,14 +429,7 @@
 				     (self-link page ',offset i))
 				 (<:as-html " ")))))
 			 ,@(when sorted-columns
-			     `((name-for-column (index)
-						(case (abs index)
-						  ,@ (mapcar (lambda (index col)
-							       `(,(1+ index)
-								 ,(sql-table-widget-column-name col)))
-						      (range (length sorted-columns))
-						      sorted-columns)))
-			       (render-column (index)
+			     `((render-column (index)
 					      (case (abs index)
 						,@ (mapcar (lambda (index col)
 							     `(,(1+ index)
@@ -394,15 +438,14 @@
 						    sorted-columns))))))
 		  (<:div :class ,(or html-class
 				     "sql-widget")
-		    (pjs-yaclml:html-block
-		      (<:p (<:as-html ,select-sql))
-		      (<:p (<:as-html ,query-args-var))
-		      (<:p (<:as-html ,count-sql)))
+		    :id ,(symbol-name* name)
+		    (<:p (<:as-html ,select-sql))
+		    (<:p (<:as-html ,query-args-var))
+		    (<:p (<:as-html ,count-sql))
 		    ,@ (mapcar (lambda (filter)
-				 (let ((values (combo-filter-values filter))
-				       (name (combo-filter-name filter))
-				       (test (combo-filter-test-name filter)))
-				   `(<:p (<:as-html ,(combo-filter-description filter))
+				 (with-slots (name test-name description values)
+				     filter
+				   `(<:p (<:as-html ,description)
 				      ,@ (apply #'append
 						(mapcar (lambda (i value)
 							  (let ((desc (second value)))
@@ -413,13 +456,35 @@
 								  (self-link ,desc ',name ,i)))))
 							(range (length values))
 							values))
-				      (when ,test
+				      (when ,test-name
 					(<:as-html " ")
 					(self-link "Disable filter" ',name nil)))))
 			       filters)
 		    (,navigator)
 		    (<:table
-		      ,(build-sql-table-widget-thead-renderer widget)
+		      (<:thead
+			(<:tr
+			  ,@ (when sorted-columns
+			       `((dolist (col ,column-headings)
+				   (destructuring-bind (,column-name ,up ,down)
+				       col
+				     (<:th
+				       (<:as-html ,column-name)
+				       " "
+				       (if ,up
+					   (self-link "Up"
+						      ',sort-order ,up)
+					   ;; else
+					   (<:as-html "Up"))
+				       " "
+				       (if ,down
+					   (self-link "Down"
+						      ',sort-order ,down)
+					   ;; else
+					   "Down"))))))
+			  ,@ (mapcar (lambda (col)
+				       `(<:th (<:as-html ,(sql-table-widget-column-name col))))
+				     unsorted-columns)))
 		      (<:tbody
 			(let ((index 0))
 			  (dolist (arg ,query-args-var)
@@ -432,7 +497,26 @@
 			    ,@ (mapcar (lambda (col)
 					 `(<:td ,(sql-table-widget-column-code col)))
 				       unsorted-columns)))))
-		    (,navigator))))))))
+		    (,navigator)
+		    (<:script
+		      (<:as-is (let (ps:*ps-print-pretty*)
+				 (ps:ps* `(register-ajax-table (ps:create id ,,(symbol-name* name)
+									  base-href ,,base-href
+									  ajax-href ,,ajax-href
+									  per-page ,,(symbol-name* per-page)
+									  offset ,,(symbol-name* offset)
+									  row-count ,,row-count
+									  sort-order ,,(symbol-name* sort-order)
+									  params (ps:create ,,@ (apply #'append
+												       (mapcar (lambda (param)
+														 (let ((sym (hunchentoot-param-name param)))
+														   (list (symbol-name* sym) sym)))
+													       (list* per-page offset sort-order
+														      other-params)))))
+							       ,,(if sorted-columns
+								     `(parenscriptify ,column-headings)
+								     ;; else
+								     nil)))))))))))))
 
 (defun insert-separator (sep list)
   (let (seen)
@@ -455,7 +539,7 @@
 	      db-context)
 	 (name (sql-table-widget-name widget))
 	 (print-comma '(write-string ", "))
-	 (:symbols query-arg query-args-var select-sql count-sql row-count index seen)
+	 (:symbols query-arg query-args-var select-sql count-sql column-headings row-count index seen column-name up down)
 	 (:slots (per-page offset sort-order sorted-columns unsorted-columns ajax-href)
 		 widget))
     `(hunchentoot:define-easy-handler (,(symb page-name "-" name "-ajax") :uri ,ajax-href)
@@ -469,17 +553,36 @@
        (hunchentoot:start-session)
        ,authenticated-test
        (setf (hunchentoot:content-type*)
-	     "application/json")
+	     "application/json; charset=utf-8")
        (hunchentoot:no-cache)
        (,with-db
-	   (let* ,(widget-vars db query-args-var select-sql count-sql row-count widget)
-	     (with-output-to-string (*standard-output*)
-	       (format t "{")
-	       (format t "\"row-count\" : ~d, " ,row-count)
-	       (format t "\"rows\" : [")
-	       (with-sqlite-statements (,db (,stmt ,select-sql))
-		 (dotimes-list (,index ,query-arg ,query-args-var :start 1)
-		   (sqlite:bind-parameter ,stmt ,index ,query-arg))
+	   (let* ,(widget-vars db query-args-var select-sql count-sql column-headings row-count widget)
+	     (with-sqlite-statements (,db (,stmt ,select-sql))
+	       (dotimes-list (,index ,query-arg ,query-args-var :start 1)
+		 (sqlite:bind-parameter ,stmt ,index ,query-arg))
+	       (with-output-to-string (*standard-output*)
+		 (format t "{")
+		 (format t "\"columnHeadings\" : [")
+		 ,@(when sorted-columns
+		     `((let (,seen)
+			 (dolist (col ,column-headings)
+			   (if ,seen
+			       (format t ", ")
+			       ;; else
+			       (setf ,seen t))
+			   (destructuring-bind (,column-name ,up ,down)
+			       col
+			     (format t "[~a, ~a, ~a]"
+				     (com.gigamonkeys.json:json ,column-name)
+				     (or (and ,up
+					      (com.gigamonkeys.json:json ,up))
+					 "null")
+				     (or (and ,down
+					      (com.gigamonkeys.json:json ,down))
+					 "null")))))))
+		 (format t "], ")
+		 (format t "\"rowCount\" : ~d, " ,row-count)
+		 (format t "\"rows\" : [")
 		 ;; no optional trailing comma in json, so must conditionally insert separator
 		 (let (,seen)
 		   (while (sqlite:step-statement ,stmt)
@@ -507,15 +610,14 @@
 								     `(pjs-yaclml:with-yaclml-output-to-string
 									,(sql-table-widget-column-code col)))
 								   unsorted-columns))))
-		       (format t "]")))
-		   (format t "]")
-		   (format t "}")))))))))
+		       (format t "]"))))
+		 (format t "]")
+		 (format t "}"))))))))
 
-(defmacro sql-easy-handler (name (&rest params) &body body)
-  (bind ((:db (name &key uri authenticated-test db-context)
-	      name)
-	 (:mv (table-params other-params)
-		     (partition #'table-param-p params))
+(defmacro sql-easy-handler ((name &key uri authenticated-test db-context)
+			    (&rest params) &body body)
+  (bind ((:mv (table-params other-params)
+	      (partition #'table-param-p params))
 	 (stmt (gensym "STMT-"))
 	 (parsed-widgets (mapcar (lambda (param)
 				   (parse-sql-table-widget-param param uri stmt))
@@ -525,7 +627,7 @@
 	   (,@other-params
 	    ,@(apply #'append (mapcar #'sql-table-widget-params parsed-widgets)))
 	 (flet ,(mapcar (lambda (widget)
-			  (build-sql-table-widget-renderer widget stmt))
+			  (build-sql-table-widget-renderer widget stmt other-params))
 		 parsed-widgets)
 	   ,@body))
        ,@(when db-context
@@ -541,4 +643,14 @@
 	;; else
 	(collect param))))
 
-
+(defmacro define-widget-script-handler (name location)
+  `(hunchentoot:define-easy-handler (,name :uri ,location)
+       ()
+     (setf (hunchentoot:content-type*)
+	   "text/javascript; charset=utf-8")
+     (multiple-value-bind (code time)
+	 (pjs-webapp-js:sql-table-ajax-script)
+       (setf (hunchentoot:header-out :last-modified)
+	     (hunchentoot:rfc-1123-date time))
+       (hunchentoot:handle-if-modified-since time)
+       code)))

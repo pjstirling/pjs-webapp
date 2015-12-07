@@ -14,6 +14,7 @@
 	   #:sql-easy-handler
 	   #:sql-table
 	   #:combo-filter
+	   #:define-widget-script-handler
 
 	   #:expand-web-params)
   #+package-local-nicknames
