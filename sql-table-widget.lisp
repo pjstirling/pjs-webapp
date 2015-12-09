@@ -37,7 +37,10 @@
 	    :reader sql-table-widget-filters)
    (html-class :initarg :html-class
 	       :initform nil
-	       :reader sql-table-widget-html-class)))
+	       :reader sql-table-widget-html-class)
+   (debug :initarg :debug
+	  :initform nil
+	  :reader sql-tabl-widget-debug)))
 
 (defclass sql-table-widget-column ()
   ((name :initarg :name
@@ -130,7 +133,8 @@
 			((:count-expression
 			  :query
 			  :query-args
-			  :html-class)
+			  :html-class
+			  :debug)
 			 (collect option value))
 			(:columns
 			 (multiple-value-bind (sorted unsorted)
@@ -373,7 +377,7 @@
 
 (defun build-sql-table-widget-renderer (widget stmt other-params)
   (bind ((:symbols db navigator query-args-var select-sql count-sql row-count column-headings column-name up down)
-	 (:slots (name base-href ajax-href offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class)
+	 (:slots (name base-href ajax-href offset per-page sort-order count-expression query query-args sorted-columns unsorted-columns filters html-class debug)
 		 widget))
     `(,name (,db)
 	    (let* ,(widget-vars db query-args-var select-sql count-sql column-headings row-count widget)
@@ -400,9 +404,10 @@
 		  (<:div :class ,(or html-class
 				     "sql-widget")
 		    :id ,(symbol-name* name)
-		    (<:p (<:as-html ,select-sql))
-		    (<:p (<:as-html ,query-args-var))
-		    (<:p (<:as-html ,count-sql))
+		    ,@(when debug
+			`((<:p (<:as-html ,select-sql))
+			  (<:p (<:as-html ,query-args-var))
+			  (<:p (<:as-html ,count-sql))))
 		    ,@ (mapcar (lambda (filter)
 				 (with-slots (name test-name description values)
 				     filter
