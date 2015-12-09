@@ -176,45 +176,6 @@
   (dotimes-c (i length)
     (collect i)))
 
-(defun build-sql-table-widget-thead-renderer (widget)
-  (let ((sort-order (sql-table-widget-sort-order widget))
-	(sorted (sql-table-widget-sorted-columns widget))
-	(unsorted (sql-table-widget-unsorted-columns widget)))
-    `(<:thead
-       (<:tr
-	 ,@(mapcar (lambda (index)
-		     `(<:th
-			(let ((sort-value (aref ,sort-order ,index)))
-			  (<:as-html (name-for-column sort-value)
-				     " ")
-			  ,(if (= 0 index)
-			       `(if (< sort-value 0)
-				    (self-link "Up"
-					       ',sort-order
-					       (change-sort-order (- sort-value) ,sort-order))
-				    ;; else
-				    (<:as-html "Up"))
-			       ;; else
-			       `(self-link "Up"
-					   ',sort-order
-					   (change-sort-order (abs sort-value) ,sort-order)))
-			  (<:as-html " ")
-			  ,(if (= 0 index)
-			       `(if (< sort-value 0)
-				    (<:as-html "Down")
-				    ;; else
-				    (self-link "Down"
-					       ',sort-order
-					       (change-sort-order (- sort-value) ,sort-order)))
-			       ;; else
-			       `(self-link "Down"
-					   ',sort-order
-					   (change-sort-order (- (abs sort-value)) ,sort-order))))))
-		   (range (length sorted)))
-	 ,@ (mapcar (lambda (col)
-		      `(<:th (<:as-html ,(sql-table-widget-column-name col))))
-		    unsorted)))))
-
 (defun change-sort-order (priority sort-order)
   (let ((result (make-array (length sort-order)))
 	(index 1))
