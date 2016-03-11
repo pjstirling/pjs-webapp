@@ -16,7 +16,7 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter +real-ip-header-name+
-    nil
+    "X-Real-IP"
     "The name of the header containing the real IP address of the request, when using a reverse proxy (this will require coordination with the configuration of your proxy). Set to NIL if you aren't running a reverse proxy (so Host-URLs will use the correct port)."))
 
 ;; ========================================================

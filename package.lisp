@@ -1,5 +1,5 @@
 (defpackage #:pjs-webapp
-  (:use #:cl #:pjs-utils #:pjs-sqlite)
+  (:use #:cl #:pjs-utils #:pjs-sqlite #:pjs-json)
   (:export #:url-with-params
 	   #:host-url-with-params
 	   #:remote-addr*

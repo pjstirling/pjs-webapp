@@ -270,7 +270,7 @@
     (parse-sql-expr result)))
 
 (defun column-headings-form (sorted-columns sort-order)
-  (bind ((:symbols sort-value))
+  (bind ((:symbols array sort-value))
     `(flet ((name-for-column (index)
 	      (case (abs index)
 		,@(mapcar (lambda (index col)
@@ -278,24 +278,29 @@
 			      ,(sql-table-widget-column-name col)))
 		   (range (length sorted-columns))
 		   sorted-columns))))
-       (list ,@ (mapcar (lambda (index)
-			  `(let ((,sort-value (aref ,sort-order ,index)))
-			     (list (name-for-column ,sort-value)
-				   ,(if (= index 0)
-					`(if (< ,sort-value 0)
-					     (change-sort-order (- ,sort-value) ,sort-order)
-					     ;; else
-					     nil)
+       (let ((,array (make-array '(,(length sorted-columns) 3))))
+	 ,@(mapcar (lambda (index)
+		     `(let ((,sort-value (aref ,sort-order ,index)))
+			(setf (aref ,array ,index 0)
+			      (name-for-column ,sort-value))
+			(setf (aref ,array ,index 1)
+			      ,(if (= index 0)
+				   `(if (< ,sort-value 0)
+					(change-sort-order (- ,sort-value) ,sort-order)
 					;; else
-					`(change-sort-order (abs ,sort-value) ,sort-order))
-				   ,(if (= index 0)
-					`(if (< ,sort-value 0)
-					     nil
-					     ;; else
-					     (change-sort-order (- ,sort-value) ,sort-order))
+					nil)
+				   ;; else
+				   `(change-sort-order (abs ,sort-value) ,sort-order)))
+			(setf (aref ,array ,index 2)
+			      ,(if (= index 0)
+				   `(if (< ,sort-value 0)
+					nil
 					;; else
-					`(change-sort-order (- (abs ,sort-value)) ,sort-order)))))
-			(range (length sorted-columns)))))))
+					(change-sort-order (- ,sort-value) ,sort-order))
+				   ;; else
+				   `(change-sort-order (- (abs ,sort-value)) ,sort-order)))))
+		   (range (length sorted-columns)))
+	 ,array))))
 
 (defun widget-vars (db query-args-var select-sql count-sql column-headings row-count widget)
   (bind ((:slots (per-page offset sort-order count-expression query query-args sorted-columns unsorted-columns filters)
@@ -431,23 +436,26 @@
 		      (<:thead
 			(<:tr
 			  ,@ (when sorted-columns
-			       `((dolist (col ,column-headings)
-				   (destructuring-bind (,column-name ,up ,down)
-				       col
-				     (<:th
-				       (<:as-html ,column-name)
-				       " "
-				       (if ,up
-					   (self-link "Up"
-						      ',sort-order ,up)
-					   ;; else
-					   (<:as-html "Up"))
-				       " "
-				       (if ,down
-					   (self-link "Down"
-						      ',sort-order ,down)
-					   ;; else
-					   "Down"))))))
+			       (mapcar (lambda (index)
+					 (flet ((header-link (text sort-order-text)
+						  (let ((self-link `(self-link ,text ',sort-order ,sort-order-text)))
+						    (if (zerop index)
+							`(if ,sort-order-text
+							     ,self-link
+							     ;; else
+							     (<:as-html ,text))
+							;; else
+							self-link))))
+					   `(let ((,column-name (aref ,column-headings ,index 0))
+						  (,up (aref ,column-headings ,index 1))
+						  (,down (aref ,column-headings ,index 2)))
+					      (<:th
+						(<:as-html ,column-name)
+						" "
+						,(header-link "Up" up)
+						" "
+						,(header-link "Down" down)))))
+				       (range (length sorted-columns))))
 			  ,@ (mapcar (lambda (col)
 				       `(<:th (<:as-html ,(sql-table-widget-column-name col))))
 				     unsorted-columns)))
@@ -504,8 +512,7 @@
   (bind ((:db (with-db db)
 	      db-context)
 	 (name (sql-table-widget-name widget))
-	 (print-comma '(write-string ", "))
-	 (:symbols query-arg query-args-var select-sql count-sql column-headings row-count index seen column-name up down)
+	 (:symbols query-arg query-args-var select-sql count-sql column-headings row-count index)
 	 (:slots (per-page offset sort-order sorted-columns unsorted-columns ajax-href)
 		 widget))
     `(hunchentoot:define-easy-handler (,(symb page-name "-" name "-ajax") :uri ,ajax-href)
@@ -519,66 +526,48 @@
        (hunchentoot:start-session)
        ,authenticated-test
        (setf (hunchentoot:content-type*)
-	     "application/json; charset=utf-8")
+	     "application/json")
        (hunchentoot:no-cache)
        (,with-db
 	   (let* ,(widget-vars db query-args-var select-sql count-sql column-headings row-count widget)
 	     (with-sqlite-statements (,db (,stmt ,select-sql))
 	       (dotimes-list (,index ,query-arg ,query-args-var :start 1)
 		 (sqlite:bind-parameter ,stmt ,index ,query-arg))
-	       (with-output-to-string (*standard-output*)
-		 (format t "{")
-		 (format t "\"columnHeadings\" : [")
-		 ,@(when sorted-columns
-		     `((let (,seen)
-			 (dolist (col ,column-headings)
-			   (if ,seen
-			       (format t ", ")
-			       ;; else
-			       (setf ,seen t))
-			   (destructuring-bind (,column-name ,up ,down)
-			       col
-			     (format t "[~a, ~a, ~a]"
-				     (com.gigamonkeys.json:json ,column-name)
-				     (or (and ,up
-					      (com.gigamonkeys.json:json ,up))
-					 "null")
-				     (or (and ,down
-					      (com.gigamonkeys.json:json ,down))
-					 "null")))))))
-		 (format t "], ")
-		 (format t "\"rowCount\" : ~d, " ,row-count)
-		 (format t "\"rows\" : [")
-		 ;; no optional trailing comma in json, so must conditionally insert separator
-		 (let (,seen)
-		   (while (sqlite:step-statement ,stmt)
-		     (if ,seen
-			 ,print-comma
-			 ;; else
-			 (setf ,seen t))
-		     (labels ,(when sorted-columns
-				`((render-column (index)
-						 (pjs-yaclml:with-yaclml-output-to-string
-						   (case (abs index)
-						     ,@ (mapcar (lambda (index col)
-								  `(,(1+ index)
+	       (labels ,(when sorted-columns
+			  `((render-column (index)
+					   (pjs-yaclml:with-yaclml-output-to-string
+					     (case (abs index)
+					       ,@ (mapcar (lambda (index col)
+							    `(,(1+ index)
+							      ,(sql-table-widget-column-code col)))
+						   (range (length sorted-columns))
+						   sorted-columns))))))
+		 (with-json-stream (flexi-streams:make-flexi-stream (hunchentoot:send-headers)
+						   :external-format (flexi-streams:make-external-format :utf-8))
+		   (json-obj
+		     (json-k-v 'column-headings
+		               (json-arr
+				 ,@ (when sorted-columns
+				      (mapcar (lambda (index)
+						`(json-arr
+						   (json-val (aref ,column-headings ,index 0))
+						   (json-val (aref ,column-headings ,index 1))
+						   (json-val (aref ,column-headings ,index 2))))
+					      (range (length sorted-columns))))))
+		     (json-k-v 'row-count ,row-count)
+		     (json-k-v 'rows
+		               (json-arr
+				 (while (sqlite:step-statement ,stmt)
+				   (json-arr
+				     ,@(mapcar (lambda (form)
+						 `(json-val ,form))
+					       (append (mapcar (lambda (index)
+								 `(render-column (aref ,sort-order ,index)))
+							       (range (length sorted-columns)))
+						       (mapcar (lambda (col)
+								 `(pjs-yaclml:with-yaclml-output-to-string
 								    ,(sql-table-widget-column-code col)))
-							 (range (length sorted-columns))
-							 sorted-columns))))))
-		       (format t "[")
-		       ,@(insert-separator print-comma
-					   (mapcar (lambda (form)
-						     `(write-string (com.gigamonkeys.json:json ,form)))
-						   (append (mapcar (lambda (index)
-								     `(render-column (aref ,sort-order ,index)))
-								   (range (length sorted-columns)))
-							   (mapcar (lambda (col)
-								     `(pjs-yaclml:with-yaclml-output-to-string
-									,(sql-table-widget-column-code col)))
-								   unsorted-columns))))
-		       (format t "]"))))
-		 (format t "]")
-		 (format t "}"))))))))
+							       unsorted-columns))))))))))))))))
 
 (defmacro sql-easy-handler ((name &key uri authenticated-test db-context)
 			    (&rest params) &body body)

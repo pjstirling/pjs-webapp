@@ -8,7 +8,7 @@
   (let ((code (eval `(ps ,@body))))
     `(defun ,name ()
        (values ,code
-	       (load-time-value (get-universal-time))))))
+	       ,(get-universal-time)))))
 
 (defmacro+ps def-event-listener (target event &body body)
   `(chain ,target
