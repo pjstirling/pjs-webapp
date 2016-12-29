@@ -92,9 +92,11 @@
 		  (scv info))
 		 ((and (listp info)
 		       (stringp (first info)))
-		  `(format nil ,(first info) ,@ (mapcar #'scv (rest info))))
+		  `(format nil ,(first info) ,@(mapcar #'scv (rest info))))
 		 ((listp info)
-		  `(,(first info) ,@ (mapcar #'scv (rest info))))
+		  `(,(first info) ,@(mapcar #'scv (rest info))))
+		 ((stringp info)
+		  info)
 		 (t
 		  (error "unhandled case ~w" info)))))
       (make-instance 'sql-table-widget-column
@@ -166,19 +168,16 @@
 (defun sql-table-widget-params (widget)
   `((,(sql-table-widget-offset widget) :parameter-type 'integer)
     (,(sql-table-widget-per-page widget) :parameter-type 'integer)
-    ,(sql-table-widget-sort-order widget)
-    ,@ (mapcar (lambda (filter)
-		 (typecase filter
-		   (combo-filter
-		    `(,(combo-filter-name filter)
-		      :parameter-type 'integer))
-		   (t
-		    (error "unhandled filter type ~w" filter))))
-	       (sql-table-widget-filters widget))))
-
-(defun range (length)
-  (dotimes-c (i length)
-    (collect i)))
+    ,@ (when (sql-table-widget-sorted-columns widget)
+	 (list (sql-table-widget-sort-order widget)))
+    ,@(mapcar (lambda (filter)
+		(typecase filter
+		  (combo-filter
+		   `(,(combo-filter-name filter)
+		     :parameter-type 'integer))
+		  (t
+		   (error "unhandled filter type ~w" filter))))
+	      (sql-table-widget-filters widget))))
 
 (defun change-sort-order (priority sort-order)
   (let ((result (make-array (length sort-order)))
@@ -234,27 +233,28 @@
   (declare (type sql-table-widget widget))
   (with-slots (sorted-columns sort-order)
       widget
-    `(dovector-c (el ,sort-order)
-       (case (abs el)
-	 ,@(mapcar (lambda (index col)
-		     (let ((sort (sql-table-widget-column-sort col)))
-		       `(,(incf index)
-			 (if (< el 0)
-			     ,(if (listp sort)
-				  `(collect ,@ (mapcar (lambda (el)
-							 `'(:desc ,el))
-						       sort))
-				  ;; else
-				  `(collect '(:desc ,sort)))
-			     ;; else not negative
-			     ,(if (listp sort)
-				  `(collect ,@ (mapcar (lambda (el)
-							 `',el)
-						       sort))
-				  ;; else
-				  `(collect ',sort))))))
-	    (range (length sorted-columns))
-	    sorted-columns)))))
+    (when sorted-columns
+      `(dovector-c (el ,sort-order)
+	 (case (abs el)
+	   ,@(mapcar (lambda (index col)
+		       (let ((sort (sql-table-widget-column-sort col)))
+			 `(,(incf index)
+			   (if (< el 0)
+			       ,(if (listp sort)
+				    `(collect ,@(mapcar (lambda (el)
+							  `'(:desc ,el))
+							sort))
+				    ;; else
+				    `(collect '(:desc ,sort)))
+			       ;; else not negative
+			       ,(if (listp sort)
+				    `(collect ,@(mapcar (lambda (el)
+							  `',el)
+							sort))
+				    ;; else
+				    `(collect ',sort))))))
+	      (range (length sorted-columns))
+	      sorted-columns))))))
 
 (defun merge-where (from-stmt &rest filter-args)
   (let ((result from-stmt))
@@ -315,13 +315,13 @@
 		  (let ((filter-name (combo-filter-name filter))
 			(test-name (combo-filter-test-name filter)))
 		    `(,test-name (case ,filter-name
-				   ,@ (mapcar (lambda (i value)
-						`(,i
-						   ,(first value)))
-				       (range (length (combo-filter-values filter)))
-				       (combo-filter-values filter))
-				      (t
-				       nil)))))
+				   ,@(mapcar (lambda (i value)
+					       `(,i
+						  ,(first value)))
+				      (range (length (combo-filter-values filter)))
+				      (combo-filter-values filter))
+				   (t
+				    nil)))))
 		filters)
       (,query-args-var ,(when (or query-args filters)
 			  `(with-collector (collect)
@@ -332,7 +332,8 @@
 					    `(when ,test-name
 					       (collect ,test-name))))
 					filters))))
-      (,sort-order (fix-sort-order ,sort-order ,(length sorted-columns)))
+      ,@ (when sorted-columns
+	   `((,sort-order (fix-sort-order ,sort-order ,(length sorted-columns)))))
       ,@ (when sorted-columns
 	   `((,column-headings ,(column-headings-form sorted-columns sort-order))))
       (,select-statement (make-instance 'select-statement
@@ -375,6 +376,14 @@
      `(ps:array ,@ (map 'list #'parenscriptify form)))
     (cons
      `(ps:array ,@ (mapcar #'parenscriptify form)))))
+
+;; ====================================================
+;;
+;; ====================================================
+
+(defmacro unpretty-ps (&body forms)
+  (let (ps:*ps-print-pretty*)
+    (macroexpand `(ps:ps ,@forms))))
 
 ;; ====================================================
 ;;
@@ -473,24 +482,27 @@
 				       unsorted-columns)))))
 		    (,navigator)
 		    (<:script
-		      (<:as-is (let (ps:*ps-print-pretty*)
-				 (ps:ps* `(register-ajax-table (ps:create id ,,(symbol-name* name)
-									  base-href ,,base-href
-									  ajax-href ,,ajax-href
-									  per-page ,,(symbol-name* per-page)
-									  offset ,,(symbol-name* offset)
-									  row-count ,,row-count
-									  sort-order ,,(symbol-name* sort-order)
-									  params (ps:create ,,@ (apply #'append
-												       (mapcar (lambda (param)
-														 (let ((sym (hunchentoot-param-name param)))
-														   (list (symbol-name* sym) sym)))
-													       (list* per-page offset sort-order
-														      other-params)))))
-							       ,,(if sorted-columns
-								     `(parenscriptify ,column-headings)
-								     ;; else
-								     nil)))))))))))))
+		      (<:as-is
+		       (unpretty-ps
+			 (register-ajax-table (ps:create id ,(symbol-name* name)
+							 base-href ,base-href
+							 ajax-href ,ajax-href
+							 per-page ,(symbol-name* per-page)
+							 offset ,(symbol-name* offset)
+							 row-count (ps:lisp ,row-count)
+							 ,@ (when sorted-columns
+							      `(sort-order ,(symbol-name* sort-order)))
+							 params (ps:create ,@ (mapcan (lambda (param)
+											(let ((sym (hunchentoot-param-name param)))
+											  (list (symbol-name* sym)
+												`(ps:lisp ,sym))))
+										      `(,per-page
+											,offset
+											,@ (when sorted-columns
+											     `(,sort-order))
+											,@other-params))))
+					      ,(when sorted-columns
+						 `(parenscriptify ,column-headings)))))))))))))
 
 (defun insert-separator (sep list)
   (let (seen)

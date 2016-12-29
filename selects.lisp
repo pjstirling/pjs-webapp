@@ -121,18 +121,20 @@
 	       (cons
 		(case (first form)
 		  ((+ - * / = and or :like)
-		   (join (sconc " "
-				(symbol-name (first form))
-				" ")
-			 (mapcar #'expr (rest form))))
+		   (apply #'join
+			  (sconc " "
+				 (symbol-name (first form))
+				 " ")
+			  (mapcar #'expr (rest form))))
 		  (not
 		   (sconc "NOT " (expr (second form))))
 		  (null
-		   (join " AND "
-			 (mapcar (lambda (form)
-				   (sconc (expr form)
-					  " IS NULL"))
-				 (rest form))))
+		   (apply #'join
+			  " AND "
+			  (mapcar (lambda (form)
+				    (sconc (expr form)
+					   " IS NULL"))
+				  (rest form))))
 		  (:as
 		   (destructuring-bind (name expr)
 		       (rest form)
@@ -152,7 +154,9 @@
 		  (t
 		   (sconc (symbol-name (first form))
 			  "("
-			  (join ", " (mapcar #'expr (rest form)))
+			  (apply #'join
+				 ", "
+				 (mapcar #'expr (rest form)))
 			  ")"))))
 	       (select-statement
 		(sconc "(" (to-sql form args) ")"))
@@ -161,28 +165,28 @@
 	   (table-or-query (form)
 	     (typecase form
 	       (select-statement
-		 (sconc "("
-			(to-sql form args)
-			")"))
+		(sconc "("
+		       (to-sql form args)
+		       ")"))
 	       (symbol
 		(sql-name form))
 	       (list
-		 (case (first form)
-		   (:as
-		    (sconc (table-or-query (third form))
-			   " AS "
-			   (sql-name (second form))))
-		   (:left-join
-		    (pop form)
-		    (let ((result (table-or-query (pop form))))
-		      (while form
-			(setf result
-			      (sconc result
-				     " LEFT JOIN "
-				     (table-or-query (pop form))
-				     " ON "
-				     (expr (pop form)))))
-		      result))))
+		(case (first form)
+		  (:as
+		   (sconc (table-or-query (third form))
+			  " AS "
+			  (sql-name (second form))))
+		  (:left-join
+		   (pop form)
+		   (let ((result (table-or-query (pop form))))
+		     (while form
+		       (setf result
+			     (sconc result
+				    " LEFT JOIN "
+				    (table-or-query (pop form))
+				    " ON "
+				    (expr (pop form)))))
+		     result))))
 	       (t
 		(error "unhandled type ~w" form))))
 	   (order-term (form)
@@ -193,23 +197,26 @@
 		 ;; else
 		 (expr form))))
     (sconc "SELECT "
-	   (join ", "
-		 (mapcar #'expr (select-statement-fields stmt)))
+	   (apply #'join
+		  ", "
+		  (mapcar #'expr (select-statement-fields stmt)))
 	   (awhen (select-statement-from stmt)
 	     (sconc " FROM "
-		    (join ", "
-			  (mapcar #'table-or-query it))))
+		    (apply #'join
+			   ", "
+			   (mapcar #'table-or-query it))))
 	   (awhen (select-statement-where stmt)
 	     (sconc " WHERE "
 		    (expr it)))
 	   (awhen (select-statement-group-by stmt)
 	     (sconc " GROUP BY "
-		    (join ", "
-			  (mapcar #'expr it))))
+		    (apply #'join
+			   ", "
+			   (mapcar #'expr it))))
 	   (awhen (select-statement-order-by stmt)
 	     (sconc " ORDER BY "
-		    (join ", "
-			  (mapcar #'order-term it))))
+		    (apply #'join ", "
+			   (mapcar #'order-term it))))
 	   (awhen (select-statement-limit stmt)
 	     (sconc " LIMIT "
 		    (if (listp it)

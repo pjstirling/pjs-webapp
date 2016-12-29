@@ -16,7 +16,7 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter +real-ip-header-name+
-    nil
+    "X-Real-IP"
     "The name of the header containing the real IP address of the request, when using a reverse proxy (this will require coordination with the configuration of your proxy). Set to NIL if you aren't running a reverse proxy (so Host-URLs will use the correct port)."))
 
 ;; ========================================================
@@ -118,17 +118,17 @@
 ;;
 ;; ========================================================
 
-(defmacro url-with-params (page &rest args)
+(defmacro url-with-params (&environment env page &rest args)
   (if args
       `(join "?"
-	     ,page
+	     ,(macroexpand page env)
 	     (join "&"
-		   ,@ (mapcar (lambda (arg)
-				`(when ,arg
-				   (sconc ,(sconc (url-encode (symbol-name* arg))
-						  "=")
-					  (url-encode ,arg))))
-			      args)))
+		   ,@(mapcar (lambda (arg)
+			       `(when ,arg
+				  (sconc ,(sconc (url-encode (symbol-name* arg))
+						 "=")
+					 (url-encode ,arg))))
+			     args)))
       ;; else
       page))
 
@@ -137,7 +137,9 @@
 ;; ========================================================
 
 (defmacro host-url-with-params (page &rest args)
-  `(url-with-params (sconc "http://"
+  `(url-with-params (sconc (if (local-network-host-p (remote-addr*))
+			       "http://"
+			       "https://")
 			   (hunchentoot:host)
 			   (%if-reverse-proxy
 			    "/"
@@ -213,5 +215,5 @@
 			      param-names)
 			     (t
 			      (error "unknown param ~a -> ~w" name value)))))
-		    (url-with-params ,uri ,@param-names))))
+		    (host-url-with-params ,uri ,@param-names))))
 	   ,@body)))))
