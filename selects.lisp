@@ -99,8 +99,7 @@
 		     :limit limit))))
 
 (defun to-sql (stmt args)
-  (unless (typep stmt 'select-statement)
-    (error "bad argument ~w" stmt))
+  (check-type stmt select-statement)
   (labels ((expr (form)
 	     (typecase form
 	       (symbol
