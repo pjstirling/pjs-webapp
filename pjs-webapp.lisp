@@ -216,4 +216,26 @@
 			     (t
 			      (error "unknown param ~a -> ~w" name value)))))
 		    (host-url-with-params ,uri ,@param-names))))
+	   (declare (ignorable #'self-href))
 	   ,@body)))))
+
+(hunchentoot:define-easy-handler (robot-handler :uri "/robots.txt")
+    ()
+  "User-Agent: *
+Disallow: /")
+
+(hunchentoot:define-easy-handler (well-known-handler :uri "/.well-known/apple-app-site-association")
+    ()
+  (with-json-output-to-string
+    (json-obj
+      (json-k-v "webcredentials"
+		(json-obj
+		  (json-k-v "apps"
+			    (json-arr
+			      (json-val "57RC8DD9V5.com.plus.pjstirling.MusicApp")))))
+      #+nil
+      (json-k-v "applinks"
+		(json-obj
+		  (json-k-v "details"
+			    (json-arr
+			      (json-obj ))))))))
