@@ -159,8 +159,9 @@
 	;; replace the table head (to account for possible new sort order
 	(replace-links state column-headings)
 	;; remove the old rows
-	(while (@ tbody first-child)
-	  (chain tbody (remove-child (@ tbody first-child))))
+	(loop #:while (@ tbody first-child)
+	      #:do
+		(chain tbody (remove-child (@ tbody first-child))))
 	;; create new rows
 	(dolist (row rows)
 	  (let ((tr (chain document (create-element "tr"))))
